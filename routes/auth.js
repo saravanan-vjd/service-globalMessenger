@@ -8,18 +8,37 @@ const JWT_SECRET = "SUPER_SECRET_KEY";
 
 // Signup
 router.post("/signup", async (req, res) => {
-  const { email, password, name, lang } = req.body;
-  if (!email || !password || !name || !lang) {
-    return res.status(400).json({ error: "Missing fields" });
+  try {
+    const { email, password, name, lang } = req.body;
+    if (!email || !password || !name || !lang) {
+      return res.status(400).json({ error: "Missing fields" });
+    }
+
+    const emailLower = email.toLowerCase().trim();
+
+    // Check if already exists
+    const exists = await db.collection("users").doc(emailLower).get();
+    if (exists.exists) {
+      return res.status(400).json({ error: "Email already registered" });
+    }
+
+    // Hash password
+    const hash = await bcrypt.hash(password, 10);
+
+    // Create user
+    await db.collection("users").doc(emailLower).set({
+      email: emailLower,
+      password: hash,
+      name,
+      lang,
+      createdAt: new Date()
+    });
+
+    res.json({ success: true, userId: emailLower });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Something went wrong" });
   }
-
-  const exists = await db.collection("users").where("email", "==", email).get();
-  if (!exists.empty) return res.status(400).json({ error: "Email already registered" });
-
-  const hash = await bcrypt.hash(password, 10);
-  const userRef = await db.collection("users").add({ email, password: hash, name, lang });
-
-  res.json({ success: true, userId: userRef.id });
 });
 
 // Login
