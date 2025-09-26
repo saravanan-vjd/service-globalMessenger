@@ -1,5 +1,4 @@
 const admin = require("firebase-admin");
-// const { firebase } = require("../config/defaults.json");
 
 const credentials = JSON.parse(process.env.CREDENTIALS);
 
