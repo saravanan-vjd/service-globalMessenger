@@ -61,16 +61,18 @@ router.post("/sendMessage", async (req, res) => {
     const { chatId, senderId, text } = req.body;
     if (!chatId || !senderId || !text) return res.status(400).json({ error: "Missing fields" });
 
-    const chatDoc = await db.collection("chats").doc(chatId).get();
+    const chatDocRef = db.collection("chats").doc(chatId);
+    const chatDoc = await chatDocRef.get();
     if (!chatDoc.exists) return res.status(404).json({ error: "Chat not found" });
 
     const { members } = chatDoc.data();
     const receiverId = members.find(m => m !== senderId);
 
+    // Get receiver's preferred language
     const receiverDoc = await db.collection("users").doc(receiverId).get();
     const receiverLang = receiverDoc.exists ? receiverDoc.data().lang || "en" : "en";
 
-    // 🔹 AI Transliterate + Translate using ChatGPT
+    // AI Transliterate + Translate
     const { commonText, translatedText } = await transliterateAndTranslate(text, receiverLang);
 
     const msg = {
@@ -82,9 +84,17 @@ router.post("/sendMessage", async (req, res) => {
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
     };
 
+    // Save message
     await db.collection("messages").add(msg);
-    await db.collection("chats").doc(chatId).update({
-      lastMessage: text,
+
+    // 🔹 Update lastMessage for both users
+    const lastMessage = {};
+    members.forEach(memberId => {
+      lastMessage[memberId] = memberId === senderId ? commonText : translatedText;
+    });
+
+    await chatDocRef.update({
+      lastMessage,
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
 
@@ -103,22 +113,58 @@ router.get("/messages/:chatId", async (req, res) => {
     .get();
 
   const messages = [];
-  snap.forEach(doc => messages.push({ id: doc.id, ...doc.data() }));
+  // snap.forEach(doc => messages.push({ id: doc.id, ...doc.data() }));
+
+  snap.forEach(doc => {
+  const data = doc.data();
+  messages.push({
+    id: doc.id,
+    textOriginal: data.textOriginal,
+    textTranslated: data.textTranslated,
+    senderId: data.senderId,
+    createdAt: data.createdAt?.toDate?.() || new Date(), // convert Firestore timestamp to JS Date
+  });
+});
 
   res.json({ success: true, messages });
 });
 
-// 🔹 Get chats for a user
+// 🔹 Get chats for a user with other user's name and user-specific lastMessage
 router.get("/userChats/:userId", async (req, res) => {
-  const snap = await db.collection("chats")
-    .where("members", "array-contains", req.params.userId)
-    .orderBy("updatedAt", "desc")
-    .get();
+  try {
+    const userId = req.params.userId;
 
-  const chats = [];
-  snap.forEach(doc => chats.push({ id: doc.id, ...doc.data() }));
+    const snap = await db.collection("chats")
+      .where("members", "array-contains", userId)
+      .orderBy("updatedAt", "desc")
+      .get();
 
-  res.json({ success: true, chats });
+    const chats = await Promise.all(snap.docs.map(async doc => {
+      const data = doc.data();
+
+      // find the other member
+      const otherUserId = data.members.find(m => m !== userId);
+      let otherUserName = "Unknown";
+
+      if (otherUserId) {
+        const userDoc = await db.collection("users").doc(otherUserId).get();
+        if (userDoc.exists) otherUserName = userDoc.data().name || "Unknown";
+      }
+
+      return {
+        id: doc.id,
+        lastMessage: data.lastMessage?.[userId] || "", // ✅ user-specific lastMessage
+        otherUserName,
+        members: data.members,
+        updatedAt: data.updatedAt,
+      };
+    }));
+
+    res.json({ success: true, chats });
+  } catch (err) {
+    console.error("/userChats error:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 module.exports = router;
